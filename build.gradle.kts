@@ -28,3 +28,14 @@ dependencies {
 tasks.test {
     useJUnitPlatform()
 }
+
+publishing {
+    publications {
+        create<MavenPublication>("maestro") {
+            from(components["java"])
+            groupId = "fr.phylisiumstudio"
+            artifactId = "Maestro"
+            version = "1.0-SNAPSHOT"
+        }
+    }
+}
