@@ -45,7 +45,7 @@ public class StateMachine<T> {
      * @param to the name of the state to which the transition goes
      */
     public void AddTransition(String from, String transitionName, String to) {
-        transitions.computeIfAbsent(from, k -> new HashMap<>()).put(transitionName, to);
+        transitions.computeIfAbsent(transitionName, k -> new HashMap<>()).put(from, to);
     }
 
     /**
