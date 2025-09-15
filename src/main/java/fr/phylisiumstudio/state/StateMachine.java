@@ -12,6 +12,7 @@ import java.util.Map;
  * @param <T> The type of the owner of the state machine.
  */
 public class StateMachine<T> {
+    @Getter
     private final T owner;
     private final Map<String, State<T>> states = new HashMap<>();
     private final Map<String, Map<String, String>> transitions = new HashMap<>();
