@@ -6,6 +6,7 @@ import lombok.Getter;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.logging.Level;
@@ -47,7 +48,7 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
     public CompletableFuture<T> read(K id) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                File file = GetFile(String.valueOf(id));
+                File file = GetFile(String.valueOf(id.hashCode()));
                 if (!file.exists()) {
                     throw new FileNotFoundException();
                 }
@@ -84,7 +85,7 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
     public CompletableFuture<Void> delete(K id) {
         return CompletableFuture.runAsync(() -> {
             try {
-                File file = GetFile(String.valueOf(id));
+                File file = GetFile(String.valueOf(id.hashCode()));
                 if (!file.exists()) {
                     throw new FileNotFoundException();
                 }
@@ -108,11 +109,11 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
                     throw new RuntimeException("Failed to list files in directory: " + folder.getAbsolutePath());
                 }
 
-                List<T> entities = new java.util.ArrayList<>();
+                List<T> entities = new ArrayList<>();
                 for (File file : files) {
                     if (file.isFile()) {
                         String json = new String(Files.readAllBytes(file.toPath()));
-                        T entity = gson.fromJson(json, (Class<T>) EntityClass());
+                        T entity = gson.fromJson(json, EntityClass());
                         entities.add(entity);
                     }
                 }
@@ -127,7 +128,7 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
     @Override
     public CompletableFuture<Boolean> exists(K id) {
         return CompletableFuture.supplyAsync(() -> {
-            File file = GetFile(String.valueOf(id));
+            File file = GetFile(String.valueOf(id.hashCode()));
             return file.exists();
         });
     }
