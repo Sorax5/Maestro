@@ -124,6 +124,14 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
         });
     }
 
+    @Override
+    public CompletableFuture<Boolean> exists(K id) {
+        return CompletableFuture.supplyAsync(() -> {
+            File file = GetFile(String.valueOf(id));
+            return file.exists();
+        });
+    }
+
     public abstract File GetFile(String name);
 
     public abstract Class<T> EntityClass();

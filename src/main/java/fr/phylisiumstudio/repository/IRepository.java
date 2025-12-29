@@ -9,4 +9,5 @@ public interface IRepository<T,K> {
     CompletableFuture<T> update(T entity);
     CompletableFuture<Void> delete(K id);
     CompletableFuture<List<T>> list();
+    CompletableFuture<Boolean> exists(K id);
 }
