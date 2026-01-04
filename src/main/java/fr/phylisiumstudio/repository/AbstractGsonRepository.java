@@ -12,6 +12,12 @@ import java.util.concurrent.CompletableFuture;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+/**
+ * Abstract repository implementation using Gson for JSON serialization
+ *
+ * @param <T> the type of the entity
+ * @param <K> the type of the entity's id
+ */
 @Getter
 public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
     private final Gson gson;
@@ -28,6 +34,12 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
         }
     }
 
+    /**
+     * Create a new entity
+     *
+     * @param entity the entity to create
+     * @return a CompletableFuture with the created entity
+     */
     @Override
     public CompletableFuture<T> create(T entity) {
         return CompletableFuture.supplyAsync(() -> {
@@ -44,6 +56,12 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
         });
     }
 
+    /**
+     * Read an entity by its id
+     *
+     * @param id the id of the entity to read
+     * @return a CompletableFuture with the read entity
+     */
     @Override
     public CompletableFuture<T> read(K id) {
         return CompletableFuture.supplyAsync(() -> {
@@ -62,6 +80,12 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
         });
     }
 
+    /**
+     * Update an existing entity
+     *
+     * @param entity the entity to update
+     * @return a CompletableFuture with the updated entity
+     */
     @Override
     public CompletableFuture<T> update(T entity) {
         return CompletableFuture.supplyAsync(() -> {
@@ -81,6 +105,12 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
         });
     }
 
+    /**
+     * Delete an entity by its id
+     *
+     * @param id the id of the entity to delete
+     * @return a CompletableFuture representing the delete operation
+     */
     @Override
     public CompletableFuture<Void> delete(K id) {
         return CompletableFuture.runAsync(() -> {
@@ -100,6 +130,11 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
         });
     }
 
+    /**
+     * List all entities
+     *
+     * @return a CompletableFuture with the list of all entities
+     */
     @Override
     public CompletableFuture<List<T>> list() {
         return CompletableFuture.supplyAsync(() -> {
@@ -125,6 +160,12 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
         });
     }
 
+    /**
+     * Check if an entity exists by its id
+     *
+     * @param id the id of the entity to check
+     * @return a CompletableFuture with true if the entity exists, false otherwise
+     */
     @Override
     public CompletableFuture<Boolean> exists(K id) {
         return CompletableFuture.supplyAsync(() -> {
@@ -133,9 +174,26 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
         });
     }
 
+    /**
+     * Get the file corresponding to the entity name
+     *
+     * @param name the name of the entity
+     * @return the file corresponding to the entity
+     */
     public abstract File GetFile(String name);
 
+    /**
+     * Get the class of the entity
+     *
+     * @return the class of the entity
+     */
     public abstract Class<T> EntityClass();
 
+    /**
+     * Get the id of the entity
+     *
+     * @param entity the entity
+     * @return the id of the entity
+     */
     public abstract K GetModelId(T entity);
 }
