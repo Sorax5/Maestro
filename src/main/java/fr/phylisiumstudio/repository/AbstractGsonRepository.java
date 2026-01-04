@@ -32,7 +32,7 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
     public CompletableFuture<T> create(T entity) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                File file = GetFile(String.valueOf(entity.hashCode()));
+                File file = GetFile(String.valueOf(GetModelId(entity)));
                 String json = gson.toJson(entity);
 
                 Files.write(file.toPath(), json.getBytes());
@@ -48,7 +48,7 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
     public CompletableFuture<T> read(K id) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                File file = GetFile(String.valueOf(id.hashCode()));
+                File file = GetFile(String.valueOf(id));
                 if (!file.exists()) {
                     throw new FileNotFoundException();
                 }
@@ -66,7 +66,7 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
     public CompletableFuture<T> update(T entity) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                File file = GetFile(String.valueOf(entity.hashCode()));
+                File file = GetFile(String.valueOf(GetModelId(entity)));
                 if (!file.exists()) {
                     throw new FileNotFoundException();
                 }
@@ -85,7 +85,7 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
     public CompletableFuture<Void> delete(K id) {
         return CompletableFuture.runAsync(() -> {
             try {
-                File file = GetFile(String.valueOf(id.hashCode()));
+                File file = GetFile(String.valueOf(id));
                 if (!file.exists()) {
                     throw new FileNotFoundException();
                 }
@@ -128,7 +128,7 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
     @Override
     public CompletableFuture<Boolean> exists(K id) {
         return CompletableFuture.supplyAsync(() -> {
-            File file = GetFile(String.valueOf(id.hashCode()));
+            File file = GetFile(String.valueOf(id));
             return file.exists();
         });
     }
@@ -136,4 +136,6 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
     public abstract File GetFile(String name);
 
     public abstract Class<T> EntityClass();
+
+    public abstract K GetModelId(T entity);
 }
