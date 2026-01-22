@@ -412,16 +412,5 @@ public class EventBus {
             }
             return clazz.cast(emitter);
         }
-
-        /**
-         * Retrieves a parameter using an ArgumentKey.
-         *
-         * @param key the ArgumentKey to retrieve the parameter
-         * @return the value associated with the ArgumentKey
-         * @param <T> the type of the value
-         */
-        public <T> T get(ArgumentKey<T> key) {
-            return this.get(key.name(), key.type());
-        }
     }
 }

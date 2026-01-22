@@ -6,5 +6,4 @@ import java.lang.annotation.*;
 @Target(ElementType.METHOD)
 public @interface ActionHandler {
     String event();
-    Arg[] args() default {};
 }
