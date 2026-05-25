@@ -34,18 +34,18 @@ public class StateMachine<T> {
      *
      * @param state The state instance.
      */
-    public void AddState(State<T> state) {
+    public void addState(State<T> state) {
         states.put(state.getId(), state);
     }
 
     /**
      * Add a transition between two states.
      *
-     * @param from the name of the state from which the transition starts
+     * @param from           the name of the state from which the transition starts
      * @param transitionName the name of the transition
-     * @param to the name of the state to which the transition goes
+     * @param to             the name of the state to which the transition goes
      */
-    public void AddTransition(String from, String transitionName, String to) {
+    public void addTransition(String from, String transitionName, String to) {
         transitions.computeIfAbsent(transitionName, k -> new HashMap<>()).put(from, to);
     }
 
@@ -54,7 +54,7 @@ public class StateMachine<T> {
      *
      * @param name the name of the initial state
      */
-    public void SetInitialState(String name) {
+    public void setInitialState(String name) {
         currentState = states.get(name);
         if (currentState != null) {
             currentState.onEnter(owner);
@@ -66,7 +66,7 @@ public class StateMachine<T> {
      *
      * @param transitionName the name of the transition to handle
      */
-    public void HandleTransition(@NotNull String transitionName) {
+    public void handleTransition(@NotNull String transitionName) {
         if (currentState == null) {
             return;
         }
@@ -93,9 +93,49 @@ public class StateMachine<T> {
      *
      * @param deltaTime the time elapsed since the last update
      */
-    public void Update(float deltaTime) {
+    public void update(float deltaTime) {
         if (currentState != null) {
             currentState.update(owner, deltaTime);
         }
+    }
+
+    /**
+     * @deprecated Use {@link #addState(State)} instead
+     */
+    @Deprecated(forRemoval = false)
+    public void AddState(State<T> state) {
+        addState(state);
+    }
+
+    /**
+     * @deprecated Use {@link #addTransition(String, String, String)} instead
+     */
+    @Deprecated(forRemoval = false)
+    public void AddTransition(String from, String transitionName, String to) {
+        addTransition(from, transitionName, to);
+    }
+
+    /**
+     * @deprecated Use {@link #setInitialState(String)} instead
+     */
+    @Deprecated(forRemoval = false)
+    public void SetInitialState(String name) {
+        setInitialState(name);
+    }
+
+    /**
+     * @deprecated Use {@link #handleTransition(String)} instead
+     */
+    @Deprecated(forRemoval = false)
+    public void HandleTransition(String transitionName) {
+        handleTransition(transitionName);
+    }
+
+    /**
+     * @deprecated Use {@link #update(float)} instead
+     */
+    @Deprecated(forRemoval = false)
+    public void Update(float deltaTime) {
+        update(deltaTime);
     }
 }

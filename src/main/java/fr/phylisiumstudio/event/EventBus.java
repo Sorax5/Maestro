@@ -1,12 +1,15 @@
 package fr.phylisiumstudio.event;
 
 import fr.phylisiumstudio.annotation.ActionHandler;
+import lombok.Getter;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.lang.reflect.InvocationTargetException;
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
 /**
@@ -16,6 +19,12 @@ import java.util.function.Consumer;
  */
 public class EventBus {
     private final Map<String, List<Consumer<Arguments>>> namedActions = new ConcurrentHashMap<>();
+    private final Map<Object, HandlerRegistration> handlerRegistry = new ConcurrentHashMap<>();
+    private final List<Middleware> middlewares = new CopyOnWriteArrayList<>();
+    private Consumer<Throwable> errorHandler = Throwable::printStackTrace;
+    private EventJournal eventJournal = null;
+    @Getter
+    private boolean eventSourcingEnabled = false;
 
     /**
      * Registers actions from the given handler object.
@@ -28,29 +37,33 @@ public class EventBus {
      */
     public void registerActions(@NotNull Object handler) {
         try {
+            var registeredActionsByEvent = new HandlerRegistration();
             Arrays.stream(handler.getClass().getDeclaredMethods())
                     .filter(method -> method.isAnnotationPresent(ActionHandler.class))
                     .filter(method -> method.getParameterCount() == 1)
                     .filter(method -> method.getParameterTypes()[0].equals(Arguments.class))
                     .forEach(method -> {
-                        ActionHandler annotation = method.getAnnotation(ActionHandler.class);
-                        String name = annotation.event();
+                        var annotation = method.getAnnotation(ActionHandler.class);
+                        var name = annotation.event();
                         method.setAccessible(true);
 
                         Consumer<Arguments> action = args -> {
                             try {
                                 method.invoke(handler, args);
                             } catch (IllegalAccessException | InvocationTargetException e) {
-                                throw new RuntimeException("Error invoking action '" + name + "'", e);
+                                errorHandler.accept(new RuntimeException("Error invoking action '" + name + "'", e));
                             }
                         };
 
-                        namedActions.computeIfAbsent(name, k -> new ArrayList<>()).add(action);
+                        namedActions.computeIfAbsent(name, k -> new CopyOnWriteArrayList<>()).add(action);
+                        registeredActionsByEvent.add(name, action);
                     });
+
+            var existing = handlerRegistry.computeIfAbsent(handler, key -> new HandlerRegistration());
+            existing.mergeFrom(registeredActionsByEvent);
         }
         catch (Exception e) {
-            System.err.println("Error registering actions: " + e.getMessage());
-            e.printStackTrace();
+            errorHandler.accept(e);
         }
     }
 
@@ -58,6 +71,7 @@ public class EventBus {
      * Unregisters actions from the given handler object.
      * The handler's methods must be annotated with @ActionBus.
      * The method name specified in the annotation will be used to find and remove the actions.
+     * This should be called explicitly when a handler is no longer needed.
      *
      * @throws RuntimeException if an error occurs during unregistration
      *
@@ -65,56 +79,214 @@ public class EventBus {
      */
     public void unregisterActions(@NotNull Object handler) {
         try {
-            Arrays.stream(handler.getClass().getDeclaredMethods())
-                    .filter(method -> method.isAnnotationPresent(ActionHandler.class))
-                    .forEach(method -> {
-                        ActionHandler annotation = method.getAnnotation(ActionHandler.class);
-                        String name = annotation.event();
+            var registeredActionsByEvent = handlerRegistry.remove(handler);
 
-                        List<Consumer<Arguments>> actions = namedActions.get(name);
-                        if (actions != null) {
-                            actions.removeIf(action -> action.toString().contains(method.getName()));
-                            if (actions.isEmpty()) {
-                                namedActions.remove(name);
-                            }
+            if (registeredActionsByEvent != null) {
+                for (var entry : registeredActionsByEvent.entries()) {
+                    var eventName = entry.getKey();
+                    var actionsToRemove = entry.getValue();
+                    var actions = namedActions.get(eventName);
+                    if (actions != null) {
+                        actions.removeAll(actionsToRemove);
+                        if (actions.isEmpty()) {
+                            namedActions.remove(eventName);
                         }
-                    });
+                    }
+                }
+            }
         }
         catch (Exception e) {
-            System.err.println("Error unregistering actions: " + e.getMessage());
-            e.printStackTrace();
+            errorHandler.accept(e);
+        }
+    }
+
+    private static final class HandlerRegistration {
+        private final Map<String, List<Consumer<Arguments>>> actionsByEvent = new ConcurrentHashMap<>();
+
+        void add(String eventName, Consumer<Arguments> action) {
+            actionsByEvent.computeIfAbsent(eventName, key -> new CopyOnWriteArrayList<>()).add(action);
+        }
+
+        void mergeFrom(HandlerRegistration other) {
+            for (var entry : other.actionsByEvent.entrySet()) {
+                actionsByEvent
+                        .computeIfAbsent(entry.getKey(), key -> new CopyOnWriteArrayList<>())
+                        .addAll(entry.getValue());
+            }
+        }
+
+        Set<Map.Entry<String, List<Consumer<Arguments>>>> entries() {
+            return actionsByEvent.entrySet();
         }
     }
 
     /**
      * Executes all actions registered under the specified action name.
-     * The provided Arguments object will be passed to each action.
-     *
-     * @throws RuntimeException if an error occurs during action execution
+     * The provided Arguments object will be passed to each action through the middleware chain.
      *
      * @param actionName the name of the action to execute
      * @param args the Arguments object containing parameters for the action
      */
     public void execute(String actionName, @NotNull Arguments args) {
         try {
-            List<Consumer<Arguments>> actions = namedActions.get(actionName);
+            if (eventSourcingEnabled && eventJournal != null) {
+                eventJournal.recordEvent(actionName, args);
+            }
+
+            var actions = namedActions.get(actionName);
             if (actions == null || actions.isEmpty()) {
                 return;
             }
 
-            for (Consumer<Arguments> action : actions) {
-                try {
-                    action.accept(args);
-                } catch (Exception e) {
-                    System.err.println("Error executing action '" + actionName + "': " + e.getMessage());
-                    e.printStackTrace();
+            Runnable chainedAction = () -> {
+                for (var action : actions) {
+                    try {
+                        action.accept(args);
+                    } catch (Exception e) {
+                        errorHandler.accept(e);
+                    }
+                }
+            };
+
+            for (var i = middlewares.size() - 1; i >= 0; i--) {
+                final var middleware = middlewares.get(i);
+                final var nextAction = chainedAction;
+                chainedAction = () -> middleware.process(actionName, args, nextAction);
+            }
+
+            chainedAction.run();
+        }
+        catch (Exception e) {
+            errorHandler.accept(e);
+        }
+    }
+
+    /**
+     * Adds a middleware to the EventBus.
+     * Middlewares are executed in the order they are added.
+     *
+     * @param middleware the middleware to add
+     */
+    public void addMiddleware(@NotNull Middleware middleware) {
+        middlewares.add(middleware);
+    }
+
+    /**
+     * Removes a middleware from the EventBus.
+     *
+     * @param middleware the middleware to remove
+     */
+    public void removeMiddleware(@NotNull Middleware middleware) {
+        middlewares.remove(middleware);
+    }
+
+    /**
+     * Clears all middlewares from the EventBus.
+     */
+    public void clearMiddlewares() {
+        middlewares.clear();
+    }
+
+    /**
+     * Returns the number of middlewares currently registered.
+     *
+     * @return the count of middlewares
+     */
+    public int getMiddlewaresCount() {
+        return middlewares.size();
+    }
+
+    /**
+     * Enable event sourcing with the specified journal.
+     * All events will be recorded in the journal.
+     *
+     * @param journal the EventJournal to use for recording
+     */
+    public void enableEventSourcing(@NotNull EventJournal journal) {
+        this.eventJournal = journal;
+        this.eventSourcingEnabled = true;
+    }
+
+    /**
+     * Disable event sourcing.
+     */
+    public void disableEventSourcing() {
+        this.eventSourcingEnabled = false;
+    }
+
+    /**
+     * Get the EventJournal if event sourcing is enabled.
+     *
+     * @return the EventJournal, or null if not enabled
+     */
+    @Nullable
+    public EventJournal getEventJournal() {
+        return eventSourcingEnabled ? eventJournal : null;
+    }
+
+    /**
+     * Replay events from the journal between two time points.
+     * This reconstructs the state as if those events were executed again.
+     *
+     * @param eventName the name of events to replay
+     * @param from the start time (inclusive)
+     * @param to the end time (inclusive)
+     */
+    public void replay(@NotNull String eventName, @NotNull Instant from, @NotNull Instant to) {
+        if (eventJournal == null) {
+            throw new IllegalStateException("Event sourcing is not enabled");
+        }
+
+        var events = eventJournal.getEvents(eventName, from, to);
+        for (var record : events) {
+            var actions = namedActions.get(record.eventName);
+            if (actions != null) {
+                var replayArgs = record.toArguments();
+                for (var action : actions) {
+                    try {
+                        action.accept(replayArgs);
+                    } catch (Exception e) {
+                        errorHandler.accept(e);
+                    }
                 }
             }
         }
-        catch (Exception e) {
-            System.err.println("Error executing action '" + actionName + "': " + e.getMessage());
-            e.printStackTrace();
+    }
+
+    /**
+     * Replay all events of a specific type from the journal.
+     *
+     * @param eventName the name of events to replay
+     */
+    public void replayAll(@NotNull String eventName) {
+        if (eventJournal == null) {
+            throw new IllegalStateException("Event sourcing is not enabled");
         }
+
+        var events = eventJournal.getEventsByName(eventName);
+        for (var record : events) {
+            var actions = namedActions.get(record.eventName);
+            if (actions != null) {
+                var replayArgs = record.toArguments();
+                for (var action : actions) {
+                    try {
+                        action.accept(replayArgs);
+                    } catch (Exception e) {
+                        errorHandler.accept(e);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Sets the error handler for the EventBus.
+     * The error handler is called when an exception occurs during action execution or registration.
+     *
+     * @param handler the error handler consumer
+     */
+    public void setErrorHandler(@NotNull Consumer<Throwable> handler) {
+        this.errorHandler = handler;
     }
 
     /**
@@ -169,6 +341,14 @@ public class EventBus {
      */
     public static class Arguments {
         private final Map<String, Object> args;
+        /**
+         * -- GETTER --
+         *  Returns the emitter object that triggered the event or action.
+         *  This is typically the object that initiated the event.
+         *
+         * @return the emitter object
+         */
+        @Getter
         private final Object emitter;
 
         /**
@@ -194,6 +374,10 @@ public class EventBus {
             args.put(key, value);
         }
 
+        Map<String, Object> snapshotValues() {
+            return new HashMap<>(args);
+        }
+
         /**
          * Retrieves a parameter by its key and casts it to the specified type.
          * If the key does not exist or the value is not of the expected type, an exception is thrown.
@@ -206,8 +390,8 @@ public class EventBus {
          * @param <T> the type of the value
          * @return the value cast to the specified type
          */
-        public <T> @Nullable T get(@NotNull String key, Class<T> clazz) {
-            Object value = args.get(key);
+        public <T> @NotNull T get(@NotNull String key, Class<T> clazz) {
+            var value = args.get(key);
             if (value == null) {
                 throw new IllegalArgumentException("No value found for key: " + key);
             }
@@ -231,14 +415,14 @@ public class EventBus {
          * @return a list of items cast to the specified type
          */
         public <T> List<T> getList(@NotNull String key, Class<T> clazz) {
-            Object value = args.get(key);
+            var value = args.get(key);
 
             if (!(value instanceof List<?> list)) {
                 throw new ClassCastException("Value for key " + key + " is not a list");
             }
 
-            List<T> result = new ArrayList<>(list.size());
-            for (Object item : list) {
+            var result = new ArrayList<T>(list.size());
+            for (var item : list) {
                 if (!clazz.isInstance(item)) {
                     throw new ClassCastException("Item in list is not of type " + clazz.getName());
                 }
@@ -261,7 +445,7 @@ public class EventBus {
          * @return an Optional containing the value if present, or empty if not found
          */
         public <T> Optional<T> getOptional(@NotNull String key, Class<T> clazz) {
-            Object value = args.get(key);
+            var value = args.get(key);
             if (value == null) {
                 return Optional.empty();
             }
@@ -285,7 +469,7 @@ public class EventBus {
          * @return an Optional containing a list of items if present, or empty if not found
          */
         public <T> Optional<List<T>> getOptionalList(@NotNull String key, Class<T> clazz) {
-            Object value = args.get(key);
+            var value = args.get(key);
             if (value == null)  {
                 return Optional.empty();
             }
@@ -294,8 +478,8 @@ public class EventBus {
                 throw new ClassCastException("Value for key " + key + " is not a list");
             }
 
-            List<T> result = new ArrayList<>();
-            for (Object item : (List<?>) value) {
+            var result = new ArrayList<T>();
+            for (var item : (List<?>) value) {
                 if (!clazz.isInstance(item)) {
                     throw new ClassCastException("Item in list is not of type " + clazz.getName());
                 }
@@ -328,7 +512,7 @@ public class EventBus {
          * @return the value if present, or defaultValue if not found
          */
         public <T> T getOrDefault(String key, Class<T> clazz, T defaultValue) {
-            Object value = args.get(key);
+            var value = args.get(key);
             if (value == null) {
                 return defaultValue;
             }
@@ -353,7 +537,7 @@ public class EventBus {
          * @return a list of items if present, or defaultValue if not found
          */
         public <T> List<T> getListOrDefault(String key, Class<T> clazz, List<T> defaultValue) {
-            Object value = args.get(key);
+            var value = args.get(key);
             if (value == null) {
                 return defaultValue;
             }
@@ -362,8 +546,8 @@ public class EventBus {
                 throw new ClassCastException("Value is not a list");
             }
 
-            List<T> result = new ArrayList<>();
-            for (Object item : (List<?>) value) {
+            var result = new ArrayList<T>();
+            for (var item : (List<?>) value) {
                 if (!clazz.isInstance(item)) {
                     throw new ClassCastException("Item in list is not of type " + clazz.getName());
                 }
@@ -379,21 +563,11 @@ public class EventBus {
          * @return a map where keys are parameter names and values are their types
          */
         public Map<String, Class<?>> getKeysAndTypes() {
-            Map<String, Class<?>> types = new HashMap<>();
-            for (Map.Entry<String, Object> entry : args.entrySet()) {
+            var types = new HashMap<String, Class<?>>();
+            for (var entry : args.entrySet()) {
                 types.put(entry.getKey(), entry.getValue().getClass());
             }
             return types;
-        }
-
-        /**
-         * Returns the emitter object that triggered the event or action.
-         * This is typically the object that initiated the event.
-         *
-         * @return the emitter object
-         */
-        public Object getEmitter() {
-            return emitter;
         }
 
         /**

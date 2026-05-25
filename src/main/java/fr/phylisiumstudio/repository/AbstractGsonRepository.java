@@ -8,7 +8,17 @@ import java.io.FileNotFoundException;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.RejectedExecutionHandler;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -19,18 +29,93 @@ import java.util.logging.Logger;
  * @param <K> the type of the entity's id
  */
 @Getter
-public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
+public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K>, AutoCloseable {
     private final Gson gson;
     private final File folder;
     private final Logger logger;
+    private final Executor ioExecutor;
+    private final ThreadPoolExecutor managedExecutor;
+    private static final int DEFAULT_IO_THREADS = Math.max(2, Runtime.getRuntime().availableProcessors());
+    private static final int DEFAULT_IO_QUEUE_CAPACITY = 1024;
 
     protected AbstractGsonRepository(Gson gson, File folder, Logger logger) {
+        this(gson, folder, logger, new ThreadPoolExecutor.AbortPolicy());
+    }
+
+    /**
+     * Create a repository with an internally managed bounded executor and configurable rejection behavior.
+     *
+     * <p>The executor is owned by this repository and can be shut down via {@link #close()}.
+     *
+     * @param gson Gson instance
+     * @param folder storage folder
+     * @param logger logger instance
+     * @param rejectedExecutionHandler rejection policy used when the I/O queue is full
+     */
+    protected AbstractGsonRepository(
+            Gson gson,
+            File folder,
+            Logger logger,
+            RejectedExecutionHandler rejectedExecutionHandler
+    ) {
+        this(gson, folder, logger, createDefaultIoExecutor(rejectedExecutionHandler), true);
+    }
+
+    protected AbstractGsonRepository(Gson gson, File folder, Logger logger, Executor ioExecutor) {
+        this(gson, folder, logger, ioExecutor, false);
+    }
+
+    private AbstractGsonRepository(Gson gson, File folder, Logger logger, Executor ioExecutor, boolean ownsExecutor) {
         this.gson = gson;
         this.folder = folder;
         this.logger = logger;
+        this.ioExecutor = Objects.requireNonNull(ioExecutor, "ioExecutor cannot be null");
+        this.managedExecutor = ownsExecutor && ioExecutor instanceof ThreadPoolExecutor pool ? pool : null;
 
         if (!folder.exists() && !folder.mkdirs()) {
             logger.severe("Failed to create the directory: " + folder.getAbsolutePath());
+        }
+    }
+
+    private static ThreadPoolExecutor createDefaultIoExecutor(RejectedExecutionHandler rejectedExecutionHandler) {
+        var threadCounter = new AtomicInteger(1);
+        ThreadFactory factory = runnable -> {
+            var thread = new Thread(runnable, "maestro-repository-io-" + threadCounter.getAndIncrement());
+            thread.setDaemon(true);
+            return thread;
+        };
+
+        return new ThreadPoolExecutor(
+                DEFAULT_IO_THREADS,
+                DEFAULT_IO_THREADS,
+                60L,
+                TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(DEFAULT_IO_QUEUE_CAPACITY),
+                factory,
+                Objects.requireNonNull(rejectedExecutionHandler, "rejectedExecutionHandler cannot be null")
+        );
+    }
+
+    @Override
+    public void close() {
+        if (managedExecutor != null) {
+            managedExecutor.shutdown();
+        }
+    }
+
+    private <R> CompletableFuture<R> supplyIo(Supplier<R> supplier) {
+        try {
+            return CompletableFuture.supplyAsync(supplier, ioExecutor);
+        } catch (RejectedExecutionException e) {
+            return CompletableFuture.failedFuture(new RuntimeException("I/O task rejected by repository executor", e));
+        }
+    }
+
+    private CompletableFuture<Void> runIo(Runnable runnable) {
+        try {
+            return CompletableFuture.runAsync(runnable, ioExecutor);
+        } catch (RejectedExecutionException e) {
+            return CompletableFuture.failedFuture(new RuntimeException("I/O task rejected by repository executor", e));
         }
     }
 
@@ -42,12 +127,12 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
      */
     @Override
     public CompletableFuture<T> create(T entity) {
-        return CompletableFuture.supplyAsync(() -> {
+        return supplyIo(() -> {
             try {
-                File file = GetFile(String.valueOf(GetModelId(entity)));
-                String json = gson.toJson(entity);
+                var file = GetFile(String.valueOf(GetModelId(entity)));
+                var json = gson.toJson(entity);
 
-                Files.write(file.toPath(), json.getBytes());
+                Files.writeString(file.toPath(), json);
                 return entity;
             } catch (Exception e) {
                 logger.log(Level.SEVERE, "Failed to create entity: " + entity.toString(), e);
@@ -64,15 +149,15 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
      */
     @Override
     public CompletableFuture<T> read(K id) {
-        return CompletableFuture.supplyAsync(() -> {
+        return supplyIo(() -> {
             try {
-                File file = GetFile(String.valueOf(id));
+                var file = GetFile(String.valueOf(id));
                 if (!file.exists()) {
                     throw new FileNotFoundException();
                 }
 
-                String json = new String(Files.readAllBytes(file.toPath()));
-                return gson.fromJson(json, (Class<T>) EntityClass());
+                var json = Files.readString(file.toPath());
+                return gson.fromJson(json, EntityClass());
             } catch (Exception e) {
                 logger.log(Level.SEVERE, "Failed to read entity with id: " + id, e);
                 throw new RuntimeException(e);
@@ -88,15 +173,15 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
      */
     @Override
     public CompletableFuture<T> update(T entity) {
-        return CompletableFuture.supplyAsync(() -> {
+        return supplyIo(() -> {
             try {
-                File file = GetFile(String.valueOf(GetModelId(entity)));
+                var file = GetFile(String.valueOf(GetModelId(entity)));
                 if (!file.exists()) {
                     throw new FileNotFoundException();
                 }
 
-                String json = gson.toJson(entity);
-                Files.write(file.toPath(), json.getBytes());
+                var json = gson.toJson(entity);
+                Files.writeString(file.toPath(), json);
                 return entity;
             } catch (Exception e) {
                 logger.log(Level.SEVERE, "Failed to update entity: " + entity.toString(), e);
@@ -113,9 +198,9 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
      */
     @Override
     public CompletableFuture<Void> delete(K id) {
-        return CompletableFuture.runAsync(() -> {
+        return runIo(() -> {
             try {
-                File file = GetFile(String.valueOf(id));
+                var file = GetFile(String.valueOf(id));
                 if (!file.exists()) {
                     throw new FileNotFoundException();
                 }
@@ -137,18 +222,18 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
      */
     @Override
     public CompletableFuture<List<T>> list() {
-        return CompletableFuture.supplyAsync(() -> {
+        return supplyIo(() -> {
             try {
-                File[] files = folder.listFiles();
+                var files = folder.listFiles();
                 if (files == null) {
                     throw new RuntimeException("Failed to list files in directory: " + folder.getAbsolutePath());
                 }
 
                 List<T> entities = new ArrayList<>();
-                for (File file : files) {
+                for (var file : files) {
                     if (file.isFile()) {
-                        String json = new String(Files.readAllBytes(file.toPath()));
-                        T entity = gson.fromJson(json, EntityClass());
+                        var json = Files.readString(file.toPath());
+                        var entity = gson.fromJson(json, EntityClass());
                         entities.add(entity);
                     }
                 }
@@ -168,8 +253,8 @@ public abstract class AbstractGsonRepository<T,K> implements IRepository<T,K> {
      */
     @Override
     public CompletableFuture<Boolean> exists(K id) {
-        return CompletableFuture.supplyAsync(() -> {
-            File file = GetFile(String.valueOf(id));
+        return supplyIo(() -> {
+            var file = GetFile(String.valueOf(id));
             return file.exists();
         });
     }
