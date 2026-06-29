@@ -345,8 +345,6 @@ public class EventBus {
          * -- GETTER --
          *  Returns the emitter object that triggered the event or action.
          *  This is typically the object that initiated the event.
-         *
-         * @return the emitter object
          */
         @Getter
         private final Object emitter;

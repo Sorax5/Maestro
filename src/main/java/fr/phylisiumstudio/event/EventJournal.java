@@ -2,7 +2,6 @@ package fr.phylisiumstudio.event;
 
 import org.jetbrains.annotations.NotNull;
 
-import java.io.Serializable;
 import java.time.Instant;
 import java.util.*;
 import java.util.function.Supplier;
@@ -130,7 +129,7 @@ public class EventJournal {
         EventRecord(@NotNull String eventName, @NotNull Object emitter, @NotNull Map<String, Object> argumentsSnapshot, @NotNull Instant timestamp) {
             this.eventName = eventName;
             this.emitter = emitter;
-            this.argumentsSnapshot = Collections.unmodifiableMap(new HashMap<>(argumentsSnapshot));
+            this.argumentsSnapshot = Map.copyOf(argumentsSnapshot);
             this.timestamp = timestamp;
         }
 
